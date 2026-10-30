@@ -559,9 +559,10 @@
   $("syncNowBtn").addEventListener("click", () => { if (GA.hasToken()) GA.syncNow(true); else toast("Primeiro liga o repositório e o token."); });
   $("syncForm").addEventListener("submit", async (e) => {
     e.preventDefault();
-    const repo = $("syncRepo").value.trim().replace(/^https?:\/\/github\.com\//, "").replace(/\/$/, "");
+    const repo = $("syncRepo").value.trim().replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "").replace(/\/$/, "");
     const branch = $("syncBranch").value.trim() || "main"; const token = $("syncToken").value.trim();
     if (!repo || !token) { toast("Preenche o repositório e o token."); return; }
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) { toast("O repositório tem de ter o formato utilizador/repositório, ex: o-teu-user/gimnoanima-dados."); return; }
     $("syncToken").value = "";
     await GA.connect(repo, branch, token);
     $("syncDisconnectBtn").hidden = !GA.hasToken(); renderSettings();
@@ -671,12 +672,41 @@
   }
   $("exportExcelBtn").addEventListener("click", exportPresencasExcel);
 
+  // ================================================================ INSTALAR COMO APP
+  let installEvt = null; // Android/Chrome/Edge: o browser entrega o diálogo de instalação
+  const isStandalone = () => (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || navigator.standalone === true;
+  const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  function updateInstallUi() {
+    const show = !isStandalone(); // já instalada: esconde
+    document.querySelectorAll(".js-install").forEach((b) => { b.hidden = !show; });
+  }
+  window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); installEvt = e; updateInstallUi(); });
+  window.addEventListener("appinstalled", () => { installEvt = null; updateInstallUi(); toast("App instalada."); });
+  document.querySelectorAll(".js-install").forEach((b) => b.addEventListener("click", async () => {
+    if (installEvt) {
+      installEvt.prompt();
+      try { await installEvt.userChoice; } catch (e) { /* ignore */ }
+      installEvt = null; updateInstallUi(); return;
+    }
+    const steps = isIOS()
+      ? `<ol class="small ps-3 mb-0"><li class="mb-2">Abre esta página no <strong>Safari</strong> (não no Chrome nem dentro de outra app).</li>
+          <li class="mb-2">Toca no ícone <strong>Partilhar</strong> (quadrado com uma seta para cima) na barra do Safari.</li>
+          <li class="mb-2">Desce e escolhe <strong>“Adicionar ao ecrã principal”</strong>.</li>
+          <li>Toca em <strong>Adicionar</strong>. O ícone da Gimnoanima fica no ecrã principal.</li></ol>`
+      : `<ol class="small ps-3 mb-0"><li class="mb-2">Abre esta página no <strong>Chrome</strong> (não dentro do WhatsApp, Instagram ou outra app — usa “Abrir no browser”).</li>
+          <li class="mb-2">Toca no menu <strong>⋮</strong> (canto superior direito).</li>
+          <li class="mb-2">Escolhe <strong>“Instalar app”</strong> ou <strong>“Adicionar ao ecrã principal”</strong>.</li>
+          <li>Confirma. O ícone da Gimnoanima fica no ecrã principal.</li></ol>`;
+    openEditor({ title: "Instalar a Gimnoanima", html: steps, saveLabel: "Percebi", onSave: () => {} });
+  }));
+
   // ================================================================ BOOT
   function boot() {
     GA.setSyncStatus(GA.hasToken() ? "syncing" : "off");
     if (GA.hasToken()) GA.syncNow(false);
     switchView("plano");
   }
+  updateInstallUi();
   if (localStorage.getItem(GA.LS.SESSION) === "1") showApp(); else $("loginScreen").hidden = false;
   if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("service-worker.js").catch(() => {}));
 })();

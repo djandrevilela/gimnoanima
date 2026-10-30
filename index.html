@@ -45,10 +45,13 @@
       <img src="icons/logo.png" alt="" class="logo-img logo-sm">
       <span class="topbar-title">Gimnoanima</span>
     </div>
-    <button type="button" class="sync-pill" id="syncStatusBtn">
-      <span id="syncStatusIcon" class="bi bi-cloud-slash"></span>
-      <span id="syncStatusText" class="d-none d-sm-inline">Local</span>
-    </button>
+    <div class="topbar-right">
+      <button type="button" class="install-btn js-install" id="installBtn" hidden><i class="bi bi-download"></i> Instalar</button>
+      <button type="button" class="sync-pill" id="syncStatusBtn">
+        <span id="syncStatusIcon" class="bi bi-cloud-slash"></span>
+        <span id="syncStatusText" class="d-none d-sm-inline">Local</span>
+      </button>
+    </div>
   </header>
 
   <!-- Seletor de classe: visível em todos os ecrãs -->
@@ -144,6 +147,8 @@
     <button class="modal-close" id="settingsModalClose" aria-label="Fechar">✕</button>
     <p class="modal-eyebrow">Mais</p>
     <h2 id="settingsTitle" class="modal-title">Sincronização &amp; Definições</h2>
+
+    <button type="button" class="btn btn-outline-primary w-100 mb-3 js-install" id="installBtn2" hidden><i class="bi bi-phone"></i> Instalar como app no telemóvel</button>
 
     <div class="sync-status-block" id="syncStatusBlock"></div>
     <p class="warning-box">

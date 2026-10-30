@@ -193,3 +193,9 @@ h1, h2, h3, .brand-font { font-family: "Baloo 2", "Inter", sans-serif; }
 .toast-host { position: fixed; bottom: 90px; left: 0; right: 0; display: flex; flex-direction: column; align-items: center; gap: 8px; z-index: 80; pointer-events: none; }
 .toast-msg { background: var(--gm-ink); color: #fff; padding: 10px 18px; border-radius: 999px; font-size: 0.82rem; font-weight: 600; box-shadow: 0 6px 20px rgba(0,0,0,0.2); opacity: 0; transform: translateY(10px); transition: all 0.25s ease; max-width: 90vw; text-align: center; }
 .toast-msg.show { opacity: 1; transform: translateY(0); }
+
+/* ---------- botão instalar ---------- */
+.topbar-right { display: flex; align-items: center; gap: 8px; }
+.install-btn { display: inline-flex; align-items: center; gap: 6px; background: #fff; color: var(--gm-primary); border: none;
+  border-radius: 999px; padding: 6px 12px; font-size: 0.8rem; font-weight: 800; }
+.install-btn[hidden] { display: none; }

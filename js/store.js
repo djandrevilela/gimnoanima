@@ -11,9 +11,14 @@
   "use strict";
   const GA = window.GA;
 
+  // As chaves levam o caminho da página: duas instalações da app no mesmo
+  // endereço (ex: /gimnoanima/ e /animakids/) deixam de partilhar dados/token.
+  const NS = "gimnoanima:" + location.pathname.replace(/[^/]*$/, "") + ":";
   const LS = {
-    SESSION: "gimnoanima-session", CONFIG: "gimnoanima-config", STATE: "gimnoanima-state",
-    SYNC: "gimnoanima-sync", LOADED: "gimnoanima-loaded", CLASS: "gimnoanima-class",
+    SESSION: NS + "session", CONFIG: NS + "config", STATE: NS + "state",
+    SYNC: NS + "sync", LOADED: NS + "loaded", CLASS: NS + "class",
+    SHA_CONFIG: NS + "sha-config", SHA_STATE: NS + "sha-state",
+    DIRTY_CONFIG: NS + "dirty-config", DIRTY_STATE: NS + "dirty-state",
   };
   const FILES = { config: "gimnoanima-config.json", state: "gimnoanima-state.json" };
   const EPOCH = new Date(0).toISOString();
@@ -26,10 +31,10 @@
 
   // ---------------- modelo ----------------
   function defaultConfig() {
-    return { version: 1, updatedAt: EPOCH, settings: { municipal: "06-29" }, roster: {}, classes: [] };
+    return { version: 1, updatedAt: EPOCH, settings: { municipal: "06-29" }, roster: {}, contacts: {}, templates: [], events: [], classes: [] };
   }
   function defaultState() {
-    return { version: 1, updatedAt: EPOCH, groups: {}, progress: {}, attendance: {}, completed: {} };
+    return { version: 1, updatedAt: EPOCH, groups: {}, progress: {}, progressLog: [], attendance: {}, completed: {} };
   }
   function normalizeClass(c) {
     const athletes = Array.isArray(c.athletes) ? c.athletes.slice() : [];
@@ -48,6 +53,7 @@
       objectives: Array.isArray(c.objectives) ? c.objectives : [],
       phases: Array.isArray(c.phases) ? c.phases : [],
       plans: c.plans && typeof c.plans === "object" ? c.plans : {},
+      notes: c.notes && typeof c.notes === "object" ? c.notes : {}, // notas por treino (data -> texto)
     };
   }
   function normalizeConfig(c) {
@@ -57,6 +63,9 @@
       version: 1, updatedAt: c.updatedAt || EPOCH,
       settings: Object.assign(base.settings, c.settings || {}),
       roster: c.roster && typeof c.roster === "object" ? c.roster : {},
+      contacts: c.contacts && typeof c.contacts === "object" ? c.contacts : {}, // atleta -> {guardian, phone, email, notes}
+      templates: Array.isArray(c.templates) ? c.templates : [],                 // modelos de treino (partilhados)
+      events: Array.isArray(c.events) ? c.events : [],                          // eventos do calendário
       classes: (Array.isArray(c.classes) ? c.classes : []).filter((x) => x && x.id).map(normalizeClass),
     };
   }
@@ -65,7 +74,8 @@
     if (!s || typeof s !== "object") return base;
     return {
       version: 1, updatedAt: s.updatedAt || EPOCH,
-      groups: s.groups || {}, progress: s.progress || {}, attendance: s.attendance || {}, completed: s.completed || {},
+      groups: s.groups || {}, progress: s.progress || {}, progressLog: Array.isArray(s.progressLog) ? s.progressLog : [],
+      attendance: s.attendance || {}, completed: s.completed || {},
     };
   }
   function loadJson(key) { try { return JSON.parse(localStorage.getItem(key) || "null"); } catch (e) { return null; } }
@@ -77,8 +87,10 @@
 
   const saveConfig = () => localStorage.setItem(LS.CONFIG, JSON.stringify(CONFIG));
   const saveState = () => localStorage.setItem(LS.STATE, JSON.stringify(STATE));
-  function touchConfig() { CONFIG.updatedAt = new Date().toISOString(); saveConfig(); schedulePush(); }
-  function touchState() { STATE.updatedAt = new Date().toISOString(); saveState(); schedulePush(); }
+  // "dirty" = este dispositivo tem alterações ainda não enviadas ao GitHub
+  function markDirty(doc) { doc.ver++; localStorage.setItem(doc.dirtyKey, "1"); }
+  function touchConfig() { CONFIG.updatedAt = new Date().toISOString(); saveConfig(); markDirty(DOCS[0]); schedulePush(); }
+  function touchState() { STATE.updatedAt = new Date().toISOString(); saveState(); markDirty(DOCS[1]); schedulePush(); }
   GA.touchConfig = touchConfig; GA.touchState = touchState;
 
   // ---------------- acesso (token) ----------------
@@ -93,7 +105,7 @@
   GA.wipeLocalData = function () {
     gen++;
     CONFIG = defaultConfig(); STATE = defaultState();
-    [LS.CONFIG, LS.STATE, LS.LOADED, LS.CLASS].forEach((k) => localStorage.removeItem(k));
+    [LS.CONFIG, LS.STATE, LS.LOADED, LS.CLASS, LS.SHA_CONFIG, LS.SHA_STATE, LS.DIRTY_CONFIG, LS.DIRTY_STATE].forEach((k) => localStorage.removeItem(k));
   };
   GA.disconnect = function () {
     localStorage.removeItem(LS.SYNC);
@@ -114,7 +126,11 @@
   // ---------------- atletas / calendário ----------------
   GA.displayName = (id) => CONFIG.roster[id] || "Atleta " + id;
   GA.sortedAthletes = (cls) => cls.athletes.slice().sort((a, b) => GA.compareNames(GA.displayName(a), GA.displayName(b)) || a.localeCompare(b));
-  GA.sessionsOf = (cls) => GA.classSessions(cls, CONFIG.settings.municipal);
+  GA.sessionsOf = (cls) => {
+    const noTrain = GA.noTrainingDates(cls);
+    const all = GA.classSessions(cls, CONFIG.settings.municipal);
+    return noTrain.size ? all.filter((d) => !noTrain.has(d)) : all;
+  };
   GA.periodsOfClass = (cls) => GA.periodsOf(cls, GA.sessionsOf(cls));
   GA.nextSessionIso = (cls) => {
     const list = GA.sessionsOf(cls); const today = GA.todayIso();
@@ -124,9 +140,20 @@
   // ---------------- estado (presenças, progresso, grupos) ----------------
   GA.getProgress = (aid, objId) => (STATE.progress[aid] && STATE.progress[aid][objId]) || 0;
   GA.setProgress = (aid, objId, level) => {
-    (STATE.progress[aid] = STATE.progress[aid] || {})[objId] = Math.max(0, Math.min(5, level));
+    level = Math.max(0, Math.min(5, level));
+    const prev = GA.getProgress(aid, objId);
+    (STATE.progress[aid] = STATE.progress[aid] || {})[objId] = level;
+    if (level !== prev) logProgress(aid, objId, prev, level);
     touchState();
   };
+  // Histórico: 1 registo por atleta+objetivo+dia (o último nível do dia).
+  // Os dados importados antes desta versão não têm histórico.
+  function logProgress(aid, objId, prev, level) {
+    const d = GA.todayIso(); const log = STATE.progressLog;
+    const i = log.findIndex((e) => e.a === aid && e.o === objId && e.d === d);
+    if (i >= 0) { if (log[i].p === level) log.splice(i, 1); else log[i].l = level; }
+    else log.push({ a: aid, o: objId, d, l: level, p: prev });
+  }
   GA.getGroup = (aid) => STATE.groups[aid] || null;
   GA.setGroup = (aid, g) => { STATE.groups[aid] = STATE.groups[aid] === g ? null : g; touchState(); };
   GA.getAttendance = (cid, date, aid) => (STATE.attendance[cid] && STATE.attendance[cid][date] && STATE.attendance[cid][date][aid]) || null;
@@ -155,7 +182,7 @@
   GA.updateClass = (id, patch) => { const c = GA.classById(id); if (c) { Object.assign(c, patch); touchConfig(); } };
   GA.removeClass = (id) => {
     const c = GA.classById(id); if (!c) return;
-    c.athletes.forEach((a) => delete CONFIG.roster[a]);
+    c.athletes.forEach((a) => { delete CONFIG.roster[a]; delete CONFIG.contacts[a]; });
     CONFIG.classes = CONFIG.classes.filter((x) => x.id !== id);
     touchConfig();
   };
@@ -171,7 +198,7 @@
   GA.removeAthlete = (cid, id) => {
     const c = GA.classById(cid); if (!c) return;
     c.athletes = c.athletes.filter((x) => x !== id);
-    delete CONFIG.roster[id]; touchConfig();
+    delete CONFIG.roster[id]; delete CONFIG.contacts[id]; touchConfig();
   };
 
   // ---------------- config: planos de treino (por dia) ----------------
@@ -193,6 +220,70 @@
     const c = GA.classById(cid); if (!c) return;
     c.exclude = c.exclude.filter((d) => d !== date);
     if (!c.extra.includes(date)) c.extra.push(date);
+    touchConfig();
+  };
+
+  // ---------------- config: notas por treino ----------------
+  GA.getNote = (cls, date) => (cls.notes && cls.notes[date]) || "";
+  GA.setNote = (cid, date, text) => {
+    const c = GA.classById(cid); if (!c) return;
+    text = String(text || "").trim();
+    if (text) c.notes[date] = text; else delete c.notes[date];
+    touchConfig();
+  };
+
+  // ---------------- config: modelos de treino e cópia de planos ----------------
+  const PLAN_FIELDS = ["micro", "formato", "aquecimento", "jogo", "ginastica", "alongamento"];
+  GA.PLAN_FIELDS = PLAN_FIELDS;
+  GA.templates = () => CONFIG.templates.slice().sort((a, b) => GA.compareNames(a.name, b.name));
+  GA.saveTemplate = (name, plan) => {
+    const clean = {}; PLAN_FIELDS.forEach((k) => { const v = String(plan[k] || "").trim(); if (v) clean[k] = v; });
+    const ex = CONFIG.templates.find((x) => x.name.toLowerCase() === name.toLowerCase());
+    if (ex) { ex.plan = clean; touchConfig(); return ex; }
+    const tpl = { id: "tpl-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), name, plan: clean };
+    CONFIG.templates.push(tpl); touchConfig(); return tpl;
+  };
+  GA.removeTemplate = (id) => { CONFIG.templates = CONFIG.templates.filter((x) => x.id !== id); touchConfig(); };
+  // copia um plano para várias datas; devolve quantas foram escritas
+  GA.copyPlan = (cid, plan, dates, overwrite) => {
+    const c = GA.classById(cid); if (!c) return 0; let n = 0;
+    dates.forEach((d) => {
+      if (c.plans[d] && !overwrite) return;
+      const clean = {}; PLAN_FIELDS.forEach((k) => { const v = String(plan[k] || "").trim(); if (v) clean[k] = v; });
+      if (Object.keys(clean).length) { c.plans[d] = clean; n++; }
+    });
+    if (n) touchConfig();
+    return n;
+  };
+
+  // ---------------- config: eventos do calendário ----------------
+  GA.EVENT_TYPES = { sarau: ["🎭", "Sarau / Espetáculo"], competicao: ["🏆", "Competição / Torneio"], reuniao: ["👥", "Reunião"], sem_treino: ["🚫", "Sem treino"], outro: ["📌", "Outro"] };
+  GA.events = () => CONFIG.events.slice().sort((a, b) => a.date.localeCompare(b.date));
+  GA.eventAppliesTo = (ev, cls) => !ev.classes || !ev.classes.length || ev.classes.includes(cls.id);
+  GA.eventCovers = (ev, date) => date >= ev.date && date <= (ev.endDate || ev.date);
+  GA.eventsFor = (cls) => GA.events().filter((ev) => GA.eventAppliesTo(ev, cls));
+  GA.eventsOn = (cls, date) => GA.eventsFor(cls).filter((ev) => GA.eventCovers(ev, date));
+  GA.noTrainingDates = (cls) => {
+    const out = new Set();
+    CONFIG.events.forEach((ev) => {
+      if (ev.type !== "sem_treino" || !GA.eventAppliesTo(ev, cls)) return;
+      const d = GA.parseIso(ev.date), end = GA.parseIso(ev.endDate || ev.date);
+      for (let i = 0; d <= end && i < 400; i++) { out.add(GA.isoLocal(d)); d.setDate(d.getDate() + 1); }
+    });
+    return out;
+  };
+  GA.saveEvent = (ev) => {
+    const i = CONFIG.events.findIndex((x) => x.id === ev.id);
+    if (i >= 0) CONFIG.events[i] = ev; else CONFIG.events.push(ev);
+    touchConfig();
+  };
+  GA.removeEvent = (id) => { CONFIG.events = CONFIG.events.filter((x) => x.id !== id); touchConfig(); };
+
+  // ---------------- config: contactos do encarregado de educação ----------------
+  GA.getContact = (aid) => CONFIG.contacts[aid] || {};
+  GA.setContact = (aid, data) => {
+    const clean = {}; ["guardian", "phone", "email", "notes"].forEach((k) => { const v = String(data[k] || "").trim(); if (v) clean[k] = v; });
+    if (Object.keys(clean).length) CONFIG.contacts[aid] = clean; else delete CONFIG.contacts[aid];
     touchConfig();
   };
 
@@ -282,30 +373,52 @@
     }
     return res.json();
   }
-  // conflito de versão (outro dispositivo gravou entretanto): relê o sha e repete
-  async function pushRetry(cfg, path, dataFn, sha, attempt) {
-    attempt = attempt || 1;
-    try { return await push(cfg, path, dataFn(), sha); }
-    catch (err) {
-      if (!(/does not match|sha/i.test(err.message) || err.status === 409 || err.status === 422) || attempt > 3) throw err;
-      const fresh = await pull(cfg, path);
-      return pushRetry(cfg, path, dataFn, fresh.sha, attempt + 1);
-    }
-  }
-
   const DOCS = [
-    { path: FILES.config, get: () => CONFIG, adopt: (r) => { CONFIG = normalizeConfig(r); saveConfig(); } },
-    { path: FILES.state, get: () => STATE, adopt: (r) => { STATE = normalizeState(r); saveState(); } },
+    { key: "config", path: FILES.config, shaKey: LS.SHA_CONFIG, dirtyKey: LS.DIRTY_CONFIG, ver: 0,
+      get: () => CONFIG, adopt: (r) => { CONFIG = normalizeConfig(r); saveConfig(); } },
+    { key: "state", path: FILES.state, shaKey: LS.SHA_STATE, dirtyKey: LS.DIRTY_STATE, ver: 0,
+      get: () => STATE, adopt: (r) => { STATE = normalizeState(r); saveState(); } },
   ];
-  // ganha sempre a versão mais recente (updatedAt)
+
+  // Regra: o que decide NÃO é a hora dos relógios, mas se o ficheiro no GitHub
+  // mudou desde a última vez que o vimos (sha) e se este dispositivo tem
+  // alterações por enviar (dirty).
+  //   • GitHub igual ao último visto + alterações locais  -> envia
+  //   • GitHub mudou + nada por enviar aqui               -> adota o do GitHub
+  //   • GitHub mudou + alterações aqui (conflito)         -> fica o mais recente
   async function syncDoc(cfg, doc, myGen) {
-    const { remote, sha } = await pull(cfg, doc.path);
-    if (myGen !== gen) return "stale"; // entretanto desligámos / mudámos de repositório
-    const localT = doc.get().updatedAt || EPOCH;
-    const remoteT = (remote && remote.updatedAt) || EPOCH;
-    if (remote && remoteT > localT) { doc.adopt(remote); return "pulled"; }
-    if (!remote || localT > remoteT) { await pushRetry(cfg, doc.path, () => doc.get(), sha); return "pushed"; }
-    return "same";
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const { remote, sha } = await pull(cfg, doc.path);
+      if (myGen !== gen) return "stale"; // entretanto desligámos / mudámos de repositório
+      const base = localStorage.getItem(doc.shaKey);
+      const local = doc.get();
+      const localT = local.updatedAt || EPOCH;
+      const remoteT = (remote && remote.updatedAt) || EPOCH;
+      let dirty = localStorage.getItem(doc.dirtyKey) === "1";
+
+      if (remote) {
+        if (!base && !dirty && localT > remoteT) dirty = true; // cache de versões antigas, sem registo de sincronização
+        if (sha === base) { if (!dirty) return "same"; }
+        else if (!dirty || localT < remoteT) {
+          doc.adopt(remote); localStorage.setItem(doc.shaKey, sha); localStorage.removeItem(doc.dirtyKey);
+          return "pulled";
+        }
+      }
+      // enviar: ficheiro ainda não existe, GitHub inalterado, ou conflito em que o local é mais recente
+      const ver = doc.ver;
+      try {
+        const res = await push(cfg, doc.path, local, remote ? sha : null);
+        if (myGen !== gen) return "stale";
+        if (res && res.content && res.content.sha) localStorage.setItem(doc.shaKey, res.content.sha);
+        else localStorage.removeItem(doc.shaKey);
+        if (doc.ver === ver) localStorage.removeItem(doc.dirtyKey); // se entretanto houve nova alteração, continua por enviar
+        return "pushed";
+      } catch (err) {
+        const conflict = /does not match|sha/i.test(err.message) || err.status === 409 || err.status === 422;
+        if (!conflict || attempt === 3) throw err;
+        // alguém gravou entretanto: volta a ler e decide de novo
+      }
+    }
   }
 
   let inFlight = false, queued = null, pushTimer = null;
@@ -313,6 +426,11 @@
     if (inFlight) { queued = showToast || queued; return; }
     const cfg = GA.loadSyncCfg();
     if (!cfg || !cfg.repo || !cfg.token) { setStatus("off"); return; }
+    if (!/^[^/\s]+\/[^/\s]+$/.test(cfg.repo)) {
+      setStatus("error");
+      if (showToast) GA.toast("Repositório inválido: usa o formato utilizador/repositório (ex: o-teu-user/gimnoanima-dados).");
+      return;
+    }
     inFlight = true; setStatus("syncing");
     const myGen = gen;
     try {
@@ -326,7 +444,9 @@
       console.error("[Gimnoanima sync]", err);
       setStatus("error");
       GA.emit("data-changed");
-      if (showToast) GA.toast("Falha na sincronização: " + err.message);
+      if (showToast) GA.toast(err instanceof TypeError
+        ? "Não foi possível contactar o GitHub. Confirma o repositório (utilizador/repositório) e a ligação à internet."
+        : "Falha na sincronização: " + err.message);
     } finally {
       inFlight = false;
       if (queued !== null) { const t = queued; queued = null; GA.syncNow(t); }

@@ -1,6 +1,6 @@
-const CACHE = "gimnoanima-v1";
-const SHELL = ["./", "./index.html", "./css/style.css", "./js/util.js", "./js/store.js", "./js/ui.js",
-  "./manifest.webmanifest", "./icons/logo.png", "./icons/icon-192.png", "./icons/icon-512.png"];
+const CACHE = "gimnoanima-v3";
+const SHELL = ["./", "./index.html", "./css/style.css", "./js/util.js", "./js/store.js", "./js/reports.js", "./js/extras.js", "./js/ui.js",
+  "./manifest.webmanifest", "./icons/logo.png", "./icons/logo-mark.png", "./icons/favicon-32.png", "./icons/icon-192.png", "./icons/icon-512.png"];
 
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).catch(() => {})); self.skipWaiting(); });
 self.addEventListener("activate", (e) => {
@@ -13,8 +13,8 @@ self.addEventListener("fetch", (e) => {
   if (url.hostname === "api.github.com") return; // dados: nunca em cache
   if (url.origin === self.location.origin) {
     // código da app: rede primeiro (apanha sempre a versão nova), cache se estiver offline
-    e.respondWith(fetch(req).then((res) => { if (res.ok) { const cp = res.clone(); caches.open(CACHE).then((c) => c.put(req, cp)); } return res; })
-      .catch(() => caches.match(req).then((m) => m || caches.match("./index.html"))));
+    e.respondWith(fetch(new Request(req, { cache: "no-cache" })).then((res) => { if (res.ok) { const cp = res.clone(); caches.open(CACHE).then((c) => c.put(req, cp)); } return res; })
+      .catch(() => caches.match(req, { ignoreSearch: true }).then((m) => m || caches.match("./index.html", { ignoreSearch: true }))));
     return;
   }
   // bibliotecas/fontes externas: cache primeiro
